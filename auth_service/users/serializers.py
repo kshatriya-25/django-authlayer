@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from rest_framework import serializers, validators
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth.models import Group, Permission
+from rest_framework_simplejwt.tokens import RefreshToken
 
 class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
@@ -32,6 +33,16 @@ class RegisterSerializer(serializers.ModelSerializer):
             last_name=validated_data.get("last_name", ""),
         )
         return user
+
+def add_user_data_to_token(token: RefreshToken, user):
+    """
+    Helper function to add custom claims to a token.
+    """
+    token['username'] = user.username
+    token['email'] = user.email
+    permissions = list(user.get_all_permissions())
+    token['permissions'] = permissions
+    return token
     
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod

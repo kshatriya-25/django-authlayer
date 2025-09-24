@@ -4,7 +4,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (RegisterView, GroupViewSet, PermissionViewSet, 
                     TwoFactorSetupView, TwoFactorVerifyView, TokenVerify2FAView,
-                    TwoFactorStatusView, TwoFactorDisableView)
+                    TwoFactorStatusView, TwoFactorDisableView, TwoFactorCancelView)
 
 
 router = DefaultRouter()
@@ -19,5 +19,6 @@ urlpatterns = [
     path("2fa/login-verify/", TokenVerify2FAView.as_view(), name="2fa_login_verify"),
     path("2fa/status/", TwoFactorStatusView.as_view(), name="2fa_status"), # <-- Add status
     path("2fa/disable/", TwoFactorDisableView.as_view(), name="2fa_disable"),
+    path("2fa/cancel/", TwoFactorCancelView.as_view(), name="2fa_cancel"),
     path('', include(router.urls)),
 ]

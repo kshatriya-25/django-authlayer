@@ -14,6 +14,11 @@ from rest_framework.permissions import IsAuthenticated
 from two_factor.utils import default_device
 from django.contrib.auth import get_user_model
 from rest_framework import status
+from django_otp.plugins.otp_totp.models import TOTPDevice
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+from .serializers import add_user_data_to_token 
+
 
 User = get_user_model()
 
@@ -27,25 +32,30 @@ class MyTokenObtainPairView(TokenObtainPairView):
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        
         try:
             serializer.is_valid(raise_exception=True)
-        except AuthenticationFailed as e:
-            return Response({'error': 'No active account found with the given credentials'}, status=401)
-        
+        except TokenError as e:
+            raise InvalidToken(e.args[0])
+
         user = serializer.user
-        device = default_device(user)
+        device = TOTPDevice.objects.filter(user=user).first()
+        print("device: " , device)
 
+        # THIS IS THE CORRECTED LOGIC
         if device and device.confirmed:
-            # If 2FA is enabled, do NOT return a JWT.
-            # Return a response indicating that 2FA is required.
-            return Response({
-                'message': 'Two-factor authentication required.',
-                'user_id': user.id # Send user_id for the next step
-            }, status=200)
-
-        # If 2FA is not enabled, proceed with the standard JWT response.
-        return super().post(request, *args, **kwargs)
+            # The user has a fully enabled 2FA device, so we proceed to the verification step.
+            return Response({'user_id': str(user.id)}, status=status.HTTP_202_ACCEPTED)
+        else:
+            # The user either has no device or an unconfirmed (pending) one.
+            # We log them in directly and issue the final tokens.
+            # This allows them to manage the pending setup from the homepage.
+            refresh = RefreshToken.for_user(user)
+            add_user_data_to_token(refresh, user)
+            data = {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
+            return Response(data, status=status.HTTP_200_OK)
 
 class GroupViewSet(viewsets.ModelViewSet):
     """
@@ -73,7 +83,7 @@ class TwoFactorSetupView(APIView):
         user = request.user
         device = default_device(user)
         if not device:
-            device = user.totpdevice_set.create(name='default')
+            device = user.totpdevice_set.create(name='default', confirmed=False)
         
         # The otpauth:// URL is what QR code generators use
         qr_code_url = device.config_url
@@ -137,12 +147,19 @@ class TwoFactorStatusView(APIView):
 
     def get(self, request, *args, **kwargs):
         """
-        Checks if 2FA is enabled for the current user.
+        Checks the detailed 2FA status for the current user.
+        Returns 'disabled', 'pending', or 'enabled'.
         """
         user = request.user
-        device = default_device(user)
-        is_enabled = device is not None and device.confirmed
-        return Response({'is_2fa_enabled': is_enabled})
+        device = TOTPDevice.objects.filter(user=user).first()
+
+        if device is None:
+            return Response({'status': 'disabled'})
+        
+        if not device.confirmed:
+            return Response({'status': 'pending'})
+
+        return Response({'status': 'enabled'})
 
 class TwoFactorDisableView(APIView):
     permission_classes = [IsAuthenticated]
@@ -157,3 +174,18 @@ class TwoFactorDisableView(APIView):
             device.delete()
             return Response({'success': '2FA has been disabled.'}, status=status.HTTP_200_OK)
         return Response({'error': '2FA is not enabled.'}, status=status.HTTP_400_BAD_REQUEST)
+    
+class TwoFactorCancelView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        """
+        Deletes any unconfirmed 2FA devices for the current user.
+        """
+        user = request.user
+        # Delete only unconfirmed devices
+        unconfirmed_devices = TOTPDevice.objects.filter(user=user, confirmed=False)
+        if unconfirmed_devices.exists():
+            unconfirmed_devices.delete()
+            return Response({'success': 'Pending 2FA setup has been cancelled.'})
+        return Response({'error': 'No pending 2FA setup to cancel.'}, status=status.HTTP_400_BAD_REQUEST)
